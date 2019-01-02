@@ -13,6 +13,9 @@ module OmniAuth
       # AD resource identifier
       option :resource, '00000002-0000-0000-c000-000000000000'
 
+      # populate extra.member_groups using AAD Graph
+      option :member_groups, false
+
       # tenant_provider must return client_id, client_secret and optionally tenant_id and base_azure_url
       args [:tenant_provider]
 
@@ -54,6 +57,12 @@ module OmniAuth
         }
       end
 
+      extra do
+        hash = { raw_info: raw_info }
+        hash[:member_groups] = member_groups if options.member_groups
+        hash
+      end
+
       def token_params
         azure_resource = request.env['omniauth.params'] && request.env['omniauth.params']['azure_resource']
         super.merge(resource: azure_resource || options.resource)
@@ -66,6 +75,22 @@ module OmniAuth
       def raw_info
         # it's all here in JWT http://msdn.microsoft.com/en-us/library/azure/dn195587.aspx
         @raw_info ||= ::JWT.decode(access_token.token, nil, false).first
+      end
+
+      def member_groups
+        # https://msdn.microsoft.com/en-us/library/azure/ad/graph/api/functions-and-actions#getMemberGroups
+        # client credentials: directory read permission must be granted to the application by admin
+        @member_groups ||=
+          begin
+            token = client.client_credentials.get_token(resource: 'https://graph.windows.net')
+            url = "https://graph.windows.net/myorganization/users/#{raw_info['oid']}/getMemberGroups?api-version=1.6"
+            body = { securityEnabledOnly: true }.to_json
+            headers = { 'Content-Type' => 'application/json' }
+            res = token.post(url, body: body, headers: headers).parsed
+            res['value'] || []
+          rescue ::OAuth2::Error, CallbackError => e
+            fail!(:invalid_client_credentials, e)
+          end
       end
 
     end
